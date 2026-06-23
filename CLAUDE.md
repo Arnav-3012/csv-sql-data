@@ -19,6 +19,7 @@ Supports validation, audit logging, and batch rollback.
 - db/rollback.py       → delete by batch_id, mark rolled_back in upload_log
 - utils/file_parser.py → CSV/Excel → pandas DataFrame
 - setup/init_audit_table.sql → one-time SQL to create upload_log table
+- assets/              → logo image folder. Place logo.png here for sidebar branding.
 
 ## .env Variables
 DB_HOST=localhost
@@ -28,7 +29,11 @@ DB_USER=root
 DB_PASSWORD=yourpassword
 
 ## Database Rules
-- All target tables MUST have a `batch_id VARCHAR(36)` column
+- Target tables are used READ-ONLY in terms of schema — no ALTER TABLE,
+  no added columns, no modifications of any kind.
+  batch_id lives only in upload_log as an internal tracking ID.
+  Rollback works by storing inserted rows as JSON in upload_log.notes
+  and deleting by exact row value match on rollback.
 - upload_log table must be created before running (run setup/init_audit_table.sql)
 - Table list is fetched live each run — no caching
 - All inserts wrapped in a single transaction (full rollback if any row fails)
@@ -60,6 +65,9 @@ Use `inspect(engine).get_pk_constraint(table_name)` for PK check.
 ## Rollback Logic
 - Quick rollback: deletes rows from last batch_id in session state
 - History rollback: user picks any batch from upload_log, same delete logic
+- Rollback reads the inserted rows from upload_log.notes (stored as JSON at insert time)
+- Deletes by matching ALL column values exactly, LIMIT 1 per row (safe for tables with duplicates)
+- No batch_id column dependency on target tables — target table schema is never touched
 - After delete: UPDATE upload_log SET rolled_back=TRUE, rolled_back_at=NOW()
 - Rollback only allowed if rolled_back=FALSE
 
@@ -87,3 +95,26 @@ Prod: DB_HOST=<office_server_ip> (MySQL Workbench on office machine)
 - Table dropdown calls SHOW TABLES every render (no st.cache)
 - validators.py returns a dict: {valid: bool, errors: [], warnings: []}
 - All SQL uses parameterized queries — no string interpolation
+
+## Logging Requirements
+
+Every Python file in this project must use Python's built-in logging module, not print statements.
+
+Standard setup at the top of every file:
+import logging
+logger = logging.getLogger(__name__)
+
+Log these events at the correct level:
+- logger.info() for: engine created, validation started, file parsed, insert started, rollback started
+- logger.warning() for: row count > 5000, nullable column has nulls, type coercion issues
+- logger.error() for: DB connection failed, validation hard block triggered, insert failed, rollback failed
+- logger.debug() for: individual row checks, column name comparisons
+
+In app.py, configure the root logger at startup:
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(name)s | %(levelname)s | %(message)s'
+)
+
+This ensures all terminal output is timestamped and traceable.
+Do not use print() anywhere in the project except test scripts.
