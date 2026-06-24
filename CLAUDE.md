@@ -27,6 +27,10 @@ DB_PORT=3306
 DB_NAME=csv_upload_demo
 DB_USER=root
 DB_PASSWORD=yourpassword
+ALLOWED_TABLES=table1,table2
+# Comma-separated whitelist of tables shown in dropdown.
+# Set to specific table names for production.
+# If empty all tables are shown (dev only).
 
 ## Database Rules
 - Target tables are used READ-ONLY in terms of schema — no ALTER TABLE,
@@ -37,6 +41,9 @@ DB_PASSWORD=yourpassword
 - upload_log table must be created before running (run setup/init_audit_table.sql)
 - Table list is fetched live each run — no caching
 - All inserts wrapped in a single transaction (full rollback if any row fails)
+- Table dropdown restricted to ALLOWED_TABLES in .env
+- Truncate flag stored as |TRUNCATED in upload_log.notes
+- Truncated batches cannot be fully rolled back
 
 ## upload_log Schema
 id, batch_id (UUID), uploaded_by (free text), target_table, file_name,
@@ -70,6 +77,8 @@ Use `inspect(engine).get_pk_constraint(table_name)` for PK check.
 - No batch_id column dependency on target tables — target table schema is never touched
 - After delete: UPDATE upload_log SET rolled_back=TRUE, rolled_back_at=NOW()
 - Rollback only allowed if rolled_back=FALSE
+- If batch notes contain |TRUNCATED, rollback warns that
+  pre-truncate data is unrecoverable.
 
 ## Streamlit UI Layout
 Sidebar: username text input (persists in session_state)

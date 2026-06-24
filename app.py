@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -78,6 +79,15 @@ with tab1:
         with get_engine().connect() as conn:
             raw_tables = conn.execute(text("SHOW TABLES")).fetchall()
         all_tables = [row[0] for row in raw_tables if row[0] != "upload_log"]
+        allowed = os.getenv("ALLOWED_TABLES", "")
+        allowed_list = [t.strip() for t in allowed.split(",") if t.strip()]
+        if allowed_list:
+            all_tables = [t for t in all_tables if t in allowed_list]
+        if not all_tables:
+            st.error(
+                "No tables available. Check ALLOWED_TABLES in your .env file."
+            )
+            st.stop()
     except Exception as e:
         st.error(f"Failed to fetch tables: {e}")
         logger.error("Failed to fetch table list | error=%s", e)
@@ -106,6 +116,8 @@ with tab1:
             df, parse_warnings = parse_file(uploaded_file)
             for pw in parse_warnings:
                 st.warning(pw)
+            st.session_state.df = df
+            st.session_state.uploaded_filename = uploaded_file.name
             st.info(f"Preview: {len(df)} rows, {len(df.columns)} columns")
             with st.expander("👀 Preview uploaded data (first 10 rows)", expanded=True):
                 st.dataframe(df.head(10), use_container_width=True)
@@ -121,6 +133,8 @@ with tab1:
             logger.info("Validation started | table=%s | user=%s", table_name, username)
             result = validate(df, table_name)
             st.session_state.validation_result = result
+            if "df" in result:
+                st.session_state.df = result["df"]
 
         if "validation_result" in st.session_state:
             vr = st.session_state.validation_result
@@ -154,14 +168,53 @@ with tab1:
             if vr["valid"]:
                 st.success("✅ All checks passed. Ready to insert.")
 
+            st.divider()
+            st.markdown("#### 🗑️ Optional — Truncate Table Before Insert")
+            with st.expander("⚠️ What does truncate do?", expanded=False):
+                st.warning(
+                    "Truncating permanently deletes ALL existing rows in the "
+                    "selected table BEFORE inserting your new data. "
+                    "Pre-truncate data cannot be recovered or rolled back. "
+                    "Use only when you want to fully replace table contents."
+                )
+            truncate_before_insert = st.checkbox(
+                "🗑️ Truncate table before inserting (deletes ALL existing rows)",
+                value=False,
+                key="truncate_checkbox"
+            )
+            if truncate_before_insert:
+                st.error(
+                    f"⚠️ ALL existing rows in '{table_name}' will be deleted "
+                    f"before insert. This cannot be undone."
+                )
+            st.session_state.truncate_before_insert = truncate_before_insert
+
     # Insert
     vr = st.session_state.get("validation_result")
-    if df is not None and vr and vr["valid"]:
+    if st.session_state.get("df") is not None and vr and vr["valid"]:
         if st.button("Insert Data"):
-            logger.info("Insert started | table=%s | user=%s | file=%s", table_name, username, uploaded_file.name)
+            logger.info("Insert started | table=%s | user=%s | file=%s", table_name, username, st.session_state.get("uploaded_filename", "unknown.csv"))
+            if st.session_state.get("truncate_before_insert", False):
+                try:
+                    with get_engine().begin() as conn:
+                        conn.execute(text(f"TRUNCATE TABLE {table_name}"))
+                    st.info(f"🗑️ Table '{table_name}' truncated successfully.")
+                    logger.info(
+                        f"Table truncated | table={table_name} | user={username}"
+                    )
+                except Exception as e:
+                    st.error(f"Truncate failed: {e}")
+                    logger.error(
+                        f"Truncate failed | table={table_name} | error={e}"
+                    )
+                    st.stop()
             result = insert_data(
-                df, table_name, username, uploaded_file.name,
+                st.session_state.df,
+                table_name,
+                username,
+                st.session_state.get("uploaded_filename", "unknown.csv"),
                 skip_duplicates=st.session_state.get("skip_duplicates", False),
+                truncated=st.session_state.get("truncate_before_insert", False),
             )
             if result["success"]:
                 msg = (
@@ -172,6 +225,7 @@ with tab1:
                 logger.info(msg)
                 st.session_state.last_batch_id = result["batch_id"]
                 st.session_state.last_upload_table = table_name
+                st.session_state.truncate_before_insert = False
 
                 col1, col2 = st.columns(2)
                 if col1.button("📤 Upload Another File"):

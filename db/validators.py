@@ -126,7 +126,9 @@ def validate(df, table_name):
             else:
                 not_iso = not series.astype(str).str.match(r"^\d{4}-\d{2}-\d{2}").all()
                 if not_iso:
-                    df[name] = pd.to_datetime(df[name], errors="coerce").dt.strftime("%Y-%m-%d")
+                    df[name] = pd.to_datetime(
+                        df[name], dayfirst=True, errors="coerce"
+                    ).dt.strftime("%Y-%m-%d %H:%M:%S")
                     warnings.append(f"Column '{name}' date format auto-converted to YYYY-MM-DD.")
 
     # 6. VARCHAR/CHAR length check
@@ -202,4 +204,5 @@ def validate(df, table_name):
         "warnings": warnings,
         "duplicate_indices": duplicate_indices,
         "auto_renamed_columns": auto_renamed_columns,
+        "df": df,
     }

@@ -27,6 +27,22 @@ def rollback_batch(batch_id, table_name):
                     "error": f"Batch {batch_id} has already been rolled back.",
                 }
 
+            log_row = conn.execute(
+                text("SELECT notes FROM upload_log WHERE batch_id = :bid"),
+                {"bid": batch_id}
+            ).fetchone()
+
+            if log_row and log_row[0] and "|TRUNCATED" in str(log_row[0]):
+                return {
+                    "success": False,
+                    "rows_deleted": 0,
+                    "error": (
+                        "This batch involved a table truncate. "
+                        "The inserted rows can be deleted but "
+                        "pre-truncate data cannot be recovered."
+                    )
+                }
+
             notes = log_row._mapping["notes"]
             rows = json.loads(notes)
             df_to_delete = pd.DataFrame(rows)
