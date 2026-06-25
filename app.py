@@ -101,6 +101,7 @@ with tab1:
     if reset_col.button("🔄 Reset", help="Clear the current file"):
         st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
         st.session_state.pop("validation_result", None)
+        st.session_state.pop("df", None)
         st.rerun()
 
     uploaded_file = st.file_uploader(
@@ -111,7 +112,6 @@ with tab1:
 
     df = None
     if uploaded_file:
-        st.session_state.pop("validation_result", None)
         try:
             df, parse_warnings = parse_file(uploaded_file)
             for pw in parse_warnings:
@@ -177,10 +177,11 @@ with tab1:
                     "Pre-truncate data cannot be recovered or rolled back. "
                     "Use only when you want to fully replace table contents."
                 )
+            # FIX: read value from session state so checkbox persists across reruns
             truncate_before_insert = st.checkbox(
                 "🗑️ Truncate table before inserting (deletes ALL existing rows)",
-                value=False,
-                key="truncate_checkbox"
+                value=st.session_state.get("truncate_before_insert", False),
+                key="truncate_checkbox",
             )
             if truncate_before_insert:
                 st.error(
@@ -193,21 +194,25 @@ with tab1:
     vr = st.session_state.get("validation_result")
     if st.session_state.get("df") is not None and vr and vr["valid"]:
         if st.button("Insert Data"):
-            logger.info("Insert started | table=%s | user=%s | file=%s", table_name, username, st.session_state.get("uploaded_filename", "unknown.csv"))
+            logger.info(
+                "Insert started | table=%s | user=%s | file=%s",
+                table_name,
+                username,
+                st.session_state.get("uploaded_filename", "unknown.csv"),
+            )
+
+            # Truncate if requested
             if st.session_state.get("truncate_before_insert", False):
                 try:
                     with get_engine().begin() as conn:
                         conn.execute(text(f"TRUNCATE TABLE {table_name}"))
-                    st.info(f"🗑️ Table '{table_name}' truncated successfully.")
-                    logger.info(
-                        f"Table truncated | table={table_name} | user={username}"
-                    )
+                    st.success(f"✅ Table '{table_name}' truncated successfully. All existing rows deleted.")
+                    logger.info("Table truncated | table=%s | user=%s", table_name, username)
                 except Exception as e:
                     st.error(f"Truncate failed: {e}")
-                    logger.error(
-                        f"Truncate failed | table={table_name} | error={e}"
-                    )
+                    logger.error("Truncate failed | table=%s | error=%s", table_name, e)
                     st.stop()
+
             result = insert_data(
                 st.session_state.df,
                 table_name,
@@ -216,12 +221,15 @@ with tab1:
                 skip_duplicates=st.session_state.get("skip_duplicates", False),
                 truncated=st.session_state.get("truncate_before_insert", False),
             )
+
             if result["success"]:
                 msg = (
                     f"✅ {result['rows_inserted']} rows inserted into "
                     f"'{table_name}' by {username} at {result['timestamp']}"
                 )
                 st.success(msg)
+                if st.session_state.get("truncate_before_insert", False):
+                    st.info("ℹ️ Table was truncated before this insert.")
                 logger.info(msg)
                 st.session_state.last_batch_id = result["batch_id"]
                 st.session_state.last_upload_table = table_name
@@ -230,6 +238,7 @@ with tab1:
                 col1, col2 = st.columns(2)
                 if col1.button("📤 Upload Another File"):
                     st.session_state.pop("validation_result", None)
+                    st.session_state.pop("df", None)
                     st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
                     st.rerun()
                 if col2.button("📋 View History"):
@@ -249,10 +258,16 @@ with tab2:
     if last_batch_id:
         st.info(f"Last upload: batch {last_batch_id} into {last_table}")
         if st.button("↩ Rollback Last Upload"):
-            logger.info("Quick rollback started | batch_id=%s | table=%s", last_batch_id, last_table)
+            logger.info(
+                "Quick rollback started | batch_id=%s | table=%s",
+                last_batch_id,
+                last_table,
+            )
             result = rollback_batch(last_batch_id, last_table)
             if result["success"]:
-                st.success(f"✅ Rolled back {result['rows_deleted']} rows from batch {last_batch_id}")
+                st.success(
+                    f"✅ Rolled back {result['rows_deleted']} rows from batch {last_batch_id}"
+                )
                 del st.session_state.last_batch_id
             else:
                 st.error(result["error"])
@@ -269,8 +284,15 @@ with tab2:
         import pandas as pd
 
         history_df = pd.DataFrame(history)[
-            ["batch_id", "target_table", "file_name", "rows_inserted",
-             "uploaded_at", "rolled_back", "rolled_back_at"]
+            [
+                "batch_id",
+                "target_table",
+                "file_name",
+                "rows_inserted",
+                "uploaded_at",
+                "rolled_back",
+                "rolled_back_at",
+            ]
         ]
         st.dataframe(history_df, use_container_width=True)
 
@@ -278,13 +300,23 @@ with tab2:
         if active_batches:
             active_ids = [r["batch_id"] for r in active_batches]
             selected_batch_id = st.selectbox("Select a batch to rollback", active_ids)
-            selected_record = next(r for r in active_batches if r["batch_id"] == selected_batch_id)
+            selected_record = next(
+                r for r in active_batches if r["batch_id"] == selected_batch_id
+            )
 
             if st.button("↩ Rollback Selected Batch"):
-                logger.info("History rollback started | batch_id=%s | table=%s", selected_batch_id, selected_record["target_table"])
-                result = rollback_batch(selected_batch_id, selected_record["target_table"])
+                logger.info(
+                    "History rollback started | batch_id=%s | table=%s",
+                    selected_batch_id,
+                    selected_record["target_table"],
+                )
+                result = rollback_batch(
+                    selected_batch_id, selected_record["target_table"]
+                )
                 if result["success"]:
-                    st.success(f"✅ Rolled back {result['rows_deleted']} rows from batch {selected_batch_id}")
+                    st.success(
+                        f"✅ Rolled back {result['rows_deleted']} rows from batch {selected_batch_id}"
+                    )
                     st.rerun()
                 else:
                     st.error(result["error"])
